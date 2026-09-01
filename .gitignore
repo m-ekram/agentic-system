@@ -1,0 +1,12 @@
+# Secrets — never commit your API key
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Runtime output
+audit_log.jsonl

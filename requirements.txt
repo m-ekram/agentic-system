@@ -1,0 +1,24 @@
+# The agent loop. Works against any OpenAI-compatible endpoint
+# (Gemini, Groq, Ollama) — see .env.example.
+openai>=1.60.0
+
+# Typed tool arguments. Each tool's args are a Pydantic model, and
+# model_json_schema() is what we hand to the LLM as the tool schema.
+pydantic>=2.10.0
+
+# Official MCP SDK — exposes the same tools to Claude Desktop.
+mcp>=1.2.0
+
+# HTTP client for the fetch_url tool (our untrusted-input source).
+httpx>=0.27.0
+
+# Loads API_KEY / BASE_URL / MODEL from .env
+python-dotenv>=1.0.0
+
+# The eval harness. pytest-asyncio is needed because some tools are async.
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
+
+# Optional (Step 12): read-only audit log viewer
+fastapi>=0.115.0
+uvicorn>=0.32.0
