@@ -130,15 +130,20 @@ using absolute paths, then restart Claude Desktop:
   "mcpServers": {
     "notes": {
       "command": "C:\\Users\\ekram\\Desktop\\code\\agentic_system\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\Users\\ekram\\Desktop\\code\\agentic_system\\mcp_server.py"]
+      "args": ["C:\\Users\\ekram\\Desktop\\code\\agentic_system\\mcp_server.py"],
+      "env": { "NOTES_MCP_APPROVAL_FALLBACK": "client" }
     }
   }
 }
 ```
 
-Writing and deleting still asks your permission here — the server requests it
-over MCP elicitation, so the gate is this project's, not the client's. See
-"Whose gate is it?" below.
+On Windows, Claude Desktop installs as an MSIX package, which virtualises
+`%APPDATA%`. The config it actually reads lives under
+`%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\` — a file
+written to the plain `%APPDATA%\Claude\` path is silently ignored.
+
+The `env` block is doing real work; see "Whose gate is it?" below for why it
+is there and what it costs.
 
 ---
 
@@ -221,6 +226,26 @@ obtained from one it delegated.
 
 Both entry points now enforce their own gate, which is what makes "all state
 changes are gated" true rather than true-of-the-client-I-happened-to-use.
+
+**What actually happened when I tested it.** Claude Desktop does not implement
+elicitation yet. The server log shows the exchange plainly:
+
+```
+server -> method="elicitation/create"
+client -> error(code=-32601)          # JSON-RPC "Method not found"
+```
+
+The fail-closed path fired and every write was refused. Correct behaviour, but
+it makes the desktop demo read-only, so this setup opts into
+`NOTES_MCP_APPROVAL_FALLBACK=client` and lets the client dialog be the gate.
+Those decisions are logged as `gate: "delegated-to-client"`, which is the whole
+point: the weaker guarantee is visible in the record instead of being quietly
+indistinguishable from the strong one.
+
+Only a genuine capability gap earns that fallback. `NoBackChannelError` and
+`-32601` qualify; any other protocol error or unexpected exception always
+denies, because a gate that failed for reasons I do not understand is a broken
+gate, and a broken gate must never be upgraded into an approval.
 
 ### Termination: three ways to stop
 
