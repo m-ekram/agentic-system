@@ -278,6 +278,13 @@ serialised behind a human approval prompt that is inherently one-at-a-time. You
 can't meaningfully ask someone to approve five concurrent deletions with one
 keystroke. Concurrency and safety are in tension there; safety wins.
 
+**It does not actually make this faster, and I measured it rather than
+assuming.** Reading 12 local files: 27.1ms concurrent against 20.4ms sequential
+— 0.75x, so the thread-pool overhead costs more than a local SSD read takes.
+The pattern is the right one for genuinely I/O-bound work and would pay off the
+moment a tool waited on a network, but at this scale it buys nothing. Claiming a
+speedup here would be a claim I cannot support.
+
 ### The audit log is a flat file on purpose
 
 An audit trail needs to be ordered and append-only — otherwise it isn't evidence
