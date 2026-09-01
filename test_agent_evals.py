@@ -429,3 +429,37 @@ async def test_unparseable_argument_json_is_handled(notes_dir, audit_log):
     tool_replies = [m for m in client.requests[-1]["messages"] if m.get("role") == "tool"]
     assert "could not parse arguments" in tool_replies[-1]["content"]
     assert result.stop_reason == "completed"
+
+
+async def test_provider_extra_content_is_echoed_back(notes_dir, audit_log):
+    """Gemini 3.x rejects the next request if a tool call's signature is dropped.
+
+    Its thinking models attach a signed `thought_signature` to every function
+    call and expect it back verbatim; losing it gets a 400 mid-conversation, so
+    the failure only shows up on multi-step runs. Opaque to us, but it has to
+    survive the round trip.
+    """
+    signature = {"google": {"thought_signature": "opaque-signed-blob"}}
+    client = FakeClient([tool_turn(("list_notes", {})), text_turn("done")])
+    client.script[0].choices[0].message.tool_calls[0].extra_content = signature
+
+    await run(client)
+
+    sent = [
+        m for m in client.requests[-1]["messages"]
+        if m.get("role") == "assistant" and m.get("tool_calls")
+    ]
+    assert sent[0]["tool_calls"][0]["extra_content"] == signature
+
+
+async def test_missing_extra_content_is_omitted(notes_dir, audit_log):
+    """Providers that send no signature must not get an empty key back."""
+    client = FakeClient([tool_turn(("list_notes", {})), text_turn("done")])
+
+    await run(client)
+
+    sent = [
+        m for m in client.requests[-1]["messages"]
+        if m.get("role") == "assistant" and m.get("tool_calls")
+    ]
+    assert "extra_content" not in sent[0]["tool_calls"][0]

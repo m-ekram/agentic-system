@@ -40,6 +40,9 @@ class FakeToolCall:
     id: str
     function: FakeFunction
     type: str = "function"
+    # Providers hang extra data off a tool call (Gemini's thought_signature
+    # lives here). Defaults to None so most tests can ignore it.
+    extra_content: dict | None = None
 
 
 @dataclass

@@ -136,6 +136,33 @@ async def always_deny(tool_name: str, args: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _encode_tool_call(call: Any) -> dict:
+    """Turn a tool call from the response back into a request-shaped dict.
+
+    Rebuilt by hand rather than passed through, so the same code path works
+    against a real client and the scripted fake used by the tests.
+
+    The extra_content passthrough is a Gemini 3.x requirement. Its "thinking"
+    models attach a signed thought_signature to every function call, and the
+    next request is rejected with a 400 unless that signature comes back
+    untouched. It's opaque to us — we don't read it, we just don't lose it.
+    Providers that don't send one (OpenAI, Groq, Ollama) are unaffected, which
+    is why this stays a conditional rather than a Gemini special case.
+    """
+    encoded = {
+        "id": call.id,
+        "type": "function",
+        "function": {
+            "name": call.function.name,
+            "arguments": call.function.arguments,
+        },
+    }
+    extra = getattr(call, "extra_content", None)
+    if extra:
+        encoded["extra_content"] = extra
+    return encoded
+
+
 async def run_agent(
     client: Any,
     user_message: str,
@@ -199,17 +226,7 @@ async def run_agent(
             {
                 "role": "assistant",
                 "content": msg.content,
-                "tool_calls": [
-                    {
-                        "id": call.id,
-                        "type": "function",
-                        "function": {
-                            "name": call.function.name,
-                            "arguments": call.function.arguments,
-                        },
-                    }
-                    for call in msg.tool_calls
-                ],
+                "tool_calls": [_encode_tool_call(c) for c in msg.tool_calls],
             }
         )
 

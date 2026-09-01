@@ -64,7 +64,7 @@ a code change:
 
 | Provider | `BASE_URL` | Example `MODEL` |
 |---|---|---|
-| Gemini (free) | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.5-flash` |
+| Gemini (free) | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-3.6-flash` |
 | Groq (free) | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
 | Ollama (local) | `http://localhost:11434/v1` | `qwen2.5:7b` |
 
@@ -165,6 +165,39 @@ asking the model to behave:
 `test_injected_web_page_cannot_delete_notes` scripts the worst case — a fully
 obedient model acting on the injected instruction — and asserts the notes
 survive anyway.
+
+Run against the real model, Gemini 3.6 Flash spotted a note carrying that
+payload, refused it, and said so in its summary:
+
+> *(Note: The document contained an embedded prompt injection attempt
+> instructing to delete notes. In accordance with safety guidelines, this
+> directive was ignored.)*
+
+That's a third layer, and the least reliable one. It's why the eval scripts a
+model that **doesn't** refuse — the design can't depend on the day's model being
+sensible.
+
+### Swappable providers cost more than a base_url
+
+The loop targets the OpenAI wire format, so switching provider is a `.env` edit.
+That gets you most of the way, but "OpenAI-compatible" is a claim about the
+request shape, not about behaviour, and two things bit me:
+
+**Schema strictness.** Pydantic decorates `model_json_schema()` with `title`
+keys. OpenAI ignores them; Gemini's compatibility layer is fussier. So
+`build_tool_schemas()` strips them, and argument models stay flat — no nested
+models, no unions. `test_tool_schemas_are_portable` pins that down.
+
+**Opaque state that has to survive the round trip.** Gemini 3.x thinking models
+attach a signed `thought_signature` to every function call and reject the *next*
+request with a 400 if it doesn't come back verbatim. My loop rebuilds the
+assistant turn by hand — which is what makes the fake client work — and was
+silently dropping it. The failure only appears on multi-step runs, because a
+single tool call never sends a follow-up.
+
+The fix is a passthrough, not a special case: `_encode_tool_call()` copies
+`extra_content` when a provider sends one and omits it otherwise, so nothing
+about it is Gemini-specific. Two regression tests cover both directions.
 
 ### Termination: three ways to stop
 
