@@ -38,7 +38,8 @@ are thin wrappers over the same registry, so a fix lands everywhere at once.
 | `api.py` | Read-only FastAPI view of the audit log |
 | `test_tools.py` | Unit tests per tool |
 | `test_agent_evals.py` | The eval suite — one test per failure mode |
-| `test_mcp_server.py` | Guards the MCP wrappers against drifting from the registry |
+| `test_mcp_server.py` | The MCP approval gate, and a guard against the wrappers drifting from the registry |
+| `test_api.py` | Audit-log viewer: filters work, and the API stays read-only |
 
 ---
 
@@ -135,8 +136,9 @@ using absolute paths, then restart Claude Desktop:
 }
 ```
 
-Claude Desktop shows every tool call and asks before running it, so it plays the
-role the CLI's `y/N` prompt plays in `agent.py`.
+Writing and deleting still asks your permission here — the server requests it
+over MCP elicitation, so the gate is this project's, not the client's. See
+"Whose gate is it?" below.
 
 ---
 
@@ -199,6 +201,27 @@ The fix is a passthrough, not a special case: `_encode_tool_call()` copies
 `extra_content` when a provider sends one and omits it otherwise, so nothing
 about it is Gemini-specific. Two regression tests cover both directions.
 
+### Whose gate is it?
+
+Claude Desktop already asks you to confirm every tool call, so the MCP server
+asking again looks redundant. It isn't. That prompt belongs to the *client*, and
+the guarantee lasts exactly as long as the client chooses to offer it — point any
+other MCP client at this server (a script, a different app, a build with
+confirmations turned off) and `delete_note` runs unchallenged.
+
+I found this by testing it rather than reasoning about it: calling `delete_note`
+through the server with no client UI in the way deleted a real note.
+
+The fix moves the question into the protocol. `_ask_permission()` uses MCP
+elicitation, so the *server* asks and the client merely presents it, which means
+the gate holds for every client. It fails closed: a client that can't be asked
+gets refused, not obeyed. Every decision is logged with a `gate` field recording
+how it was made, so the audit trail distinguishes an approval this project
+obtained from one it delegated.
+
+Both entry points now enforce their own gate, which is what makes "all state
+changes are gated" true rather than true-of-the-client-I-happened-to-use.
+
 ### Termination: three ways to stop
 
 An agent that can call tools in a loop needs a reason to stop that doesn't
@@ -255,9 +278,10 @@ stop, does the gate hold, does the log get written — not whether the model is
 clever. Model quality is a real question, but it isn't what a regression test
 should be measuring.
 
-I check the tests can actually fail: deleting the allowlist check turns 19 of
-them red, and bypassing the approval gate turns 5 red, including the injection
-eval.
+I check the tests can actually fail. Deleting the allowlist check turns 19 red,
+bypassing the CLI approval gate turns 5 red including the injection eval, and
+short-circuiting the MCP gate turns 9 red. A suite you have never seen fail is
+not evidence of anything.
 
 ---
 
@@ -274,6 +298,8 @@ eval.
   extraction, so the model sees markup.
 - **One conversation at a time.** No persistence between runs, no multi-user
   anything. The audit log is the only state that survives.
-- **MCP approval is Claude Desktop's, not ours.** The CLI's explicit `y/N` gate
-  doesn't apply to the MCP path; Claude Desktop's own confirmation UI does. The
-  allowlist and the audit log apply to both.
+- **Elicitation is an optional MCP capability.** If a client doesn't support it,
+  the server refuses risky tools rather than guessing. Set
+  `NOTES_MCP_APPROVAL_FALLBACK=client` to defer to the client's own confirmation
+  UI instead — the audit log records which gate decided, so a delegated approval
+  is never mistaken for one this project made.
