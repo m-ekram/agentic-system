@@ -24,6 +24,7 @@ Wire it up:  see the claude_desktop_config.json snippet in the README.
 import os
 
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.shared.exceptions import MCPError, NoBackChannelError
 from pydantic import BaseModel, Field
 
 import audit
@@ -54,6 +55,19 @@ server = MCPServer(
 FALLBACK = os.environ.get("NOTES_MCP_APPROVAL_FALLBACK", "deny")
 
 
+# JSON-RPC "Method not found" — what a client returns when it has no
+# elicitation support. Distinguishing this from a genuine error matters: only a
+# real capability gap is allowed to fall back to the client gate.
+METHOD_NOT_FOUND = -32601
+
+
+def _fallback(reason: str) -> tuple[bool, str]:
+    """Decide what to do when the human genuinely cannot be reached."""
+    if FALLBACK == "client":
+        return True, "delegated-to-client"
+    return False, f"denied-{reason}"
+
+
 class ApprovalDecision(BaseModel):
     """Elicitation schemas may only use primitive fields, so this is one bool."""
 
@@ -82,11 +96,21 @@ async def _ask_permission(ctx: Context, tool_name: str, args: dict) -> tuple[boo
             message=f"Allow {tool_name}({detail})? This changes files on disk.",
             schema=ApprovalDecision,
         )
-    except Exception:
-        # Elicitation is an optional client capability; not every client has it.
-        if FALLBACK == "client":
-            return True, "delegated-to-client"
-        return False, "denied-no-elicitation-support"
+    except NoBackChannelError:
+        # No channel exists for a server-initiated request, so there is no one
+        # to ask. A real capability gap, not a failure.
+        return _fallback("no-back-channel")
+    except MCPError as e:
+        if e.code == METHOD_NOT_FOUND:
+            # The client does not implement elicitation/create at all.
+            return _fallback("no-elicitation-support")
+        # Some other protocol error. We do not know why it failed, so we do not
+        # get to assume consent: deny, and record the code for debugging.
+        return False, f"denied-elicitation-error-{e.code}"
+    except Exception as e:
+        # A bug on our side. Deliberately not eligible for the client fallback:
+        # a broken gate must never be silently upgraded into an approval.
+        return False, f"denied-elicitation-crashed-{type(e).__name__}"
 
     if result.action == "accept" and result.data is not None:
         return bool(result.data.approve), "elicit"

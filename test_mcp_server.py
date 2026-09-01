@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from mcp.shared.exceptions import MCPError
+
 import audit
 import mcp_server
 import tools
@@ -91,16 +93,20 @@ class FakeCtx:
     client returned a response, and the answer inside it was no.
     """
 
-    def __init__(self, action="accept", approve=True, unsupported=False):
+    def __init__(self, action="accept", approve=True, unsupported=False, raises=None):
         self.action = action
         self.approve = approve
         self.unsupported = unsupported
+        self.raises = raises
         self.messages: list[str] = []
 
     async def elicit(self, message, schema):
         self.messages.append(message)
+        if self.raises is not None:
+            raise self.raises
         if self.unsupported:
-            raise RuntimeError("client does not support elicitation")
+            # Exactly what Claude Desktop returns: JSON-RPC method not found.
+            raise MCPError(code=-32601, message="Method not found")
         data = schema(approve=self.approve) if self.action == "accept" else None
         return SimpleNamespace(action=self.action, data=data)
 
@@ -252,3 +258,32 @@ async def test_read_only_tools_do_not_ask(notes_dir, audit_log, monkeypatch):
     await server.call_tool("read_note", {"filenames": ["todo.md"]})
 
     assert asked == []
+
+
+async def test_protocol_error_is_never_delegated(notes_dir, audit_log, monkeypatch):
+    """A failure we do not understand must not become an approval.
+
+    Only a genuine capability gap is eligible for the client fallback. An
+    unexpected error means the gate is broken, and a broken gate has to fail
+    closed even when the fallback is switched on.
+    """
+    monkeypatch.setattr(mcp_server, "FALLBACK", "client")
+
+    result = await _delete(FakeCtx(raises=RuntimeError("boom")))
+
+    assert (notes_dir / "todo.md").exists()
+    assert "declined" in result
+    assert audit.read_events()[0]["gate"] == "denied-elicitation-crashed-RuntimeError"
+
+
+async def test_unexpected_protocol_code_is_never_delegated(
+    notes_dir, audit_log, monkeypatch
+):
+    """Same rule for a protocol error that is not 'method not found'."""
+    monkeypatch.setattr(mcp_server, "FALLBACK", "client")
+
+    result = await _delete(FakeCtx(raises=MCPError(code=-32603, message="Internal error")))
+
+    assert (notes_dir / "todo.md").exists()
+    assert "declined" in result
+    assert audit.read_events()[0]["gate"] == "denied-elicitation-error--32603"
