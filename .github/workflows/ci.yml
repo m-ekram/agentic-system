@@ -26,3 +26,18 @@ jobs:
       # time — a model having an off day can never turn this build red.
       - name: Run the eval suite
         run: pytest -v
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Builds the image and runs the eval suite inside it. This is what keeps
+      # the Dockerfile honest: a missing dependency or a file that only exists
+      # on my laptop fails here rather than the first time someone else clones
+      # the repo.
+      - name: Build the image
+        run: docker build -t notes-agent .
+
+      - name: Run the evals inside the container
+        run: docker run --rm notes-agent
