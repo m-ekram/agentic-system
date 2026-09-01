@@ -1,5 +1,7 @@
 # Notes Agent — a multi-step tool-calling agent with a human in the loop
 
+[![CI](https://github.com/m-ekram/agentic-system/actions/workflows/ci.yml/badge.svg)](https://github.com/m-ekram/agentic-system/actions/workflows/ci.yml)
+
 An LLM agent that manages a folder of markdown notes. It picks its own sequence
 of tools at runtime, reads files concurrently, stops itself when it's going in
 circles, and cannot change anything on disk without a person saying yes.
@@ -105,8 +107,11 @@ pytest
 
 ```bash
 docker build -t notes-agent .
-docker run --rm notes-agent
+docker run --rm notes-agent      # runs the eval suite inside the container
 ```
+
+CI builds this image and runs the evals inside it on every push, so the
+Dockerfile can't quietly rot.
 
 **The audit log viewer**
 
