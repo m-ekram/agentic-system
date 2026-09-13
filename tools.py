@@ -17,6 +17,7 @@ worth more here than shaving a keyword off two functions.
 """
 
 import asyncio
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -31,8 +32,10 @@ import audit
 # Every file operation in this project is confined to this one directory.
 # This is the security boundary of the whole agent, and it lives in Python —
 # not in the prompt. See _safe_path() below for why that distinction matters.
+# The NOTES_DIR env var moves it (the deployed server keeps notes on a volume);
+# wherever it points, the same check applies.
 
-NOTES_DIR = (Path(__file__).parent / "notes").resolve()
+NOTES_DIR = Path(os.environ.get("NOTES_DIR", Path(__file__).parent / "notes")).resolve()
 
 
 class ToolError(Exception):

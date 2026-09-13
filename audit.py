@@ -24,12 +24,14 @@ actually happened.
 """
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# Module-level so the tests can point it at a temp file with monkeypatch.
-AUDIT_LOG_PATH = Path(__file__).parent / "audit_log.jsonl"
+# Module-level so the tests can point it at a temp file with monkeypatch, and
+# overridable from the environment so a deployment can keep it on a volume.
+AUDIT_LOG_PATH = Path(os.environ.get("AUDIT_LOG_PATH", Path(__file__).parent / "audit_log.jsonl"))
 
 
 def append_event(event_type: str, **fields: Any) -> dict:

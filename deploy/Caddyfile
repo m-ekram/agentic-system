@@ -1,0 +1,6 @@
+# Caddy obtains and renews a Let's Encrypt certificate for this host by itself,
+# which is why ports 80 and 443 must be open. It flushes text/event-stream
+# responses immediately, and the elicitation prompt travels on one of those.
+{$MCP_PUBLIC_HOST} {
+	reverse_proxy mcp:8000
+}

@@ -145,6 +145,49 @@ written to the plain `%APPDATA%\Claude\` path is silently ignored.
 The `env` block is doing real work; see "Whose gate is it?" below for why it
 is there and what it costs.
 
+**As a remote MCP server (EC2)**
+
+`deploy/` runs the same server over streamable HTTP behind Caddy, which handles
+TLS. The app's port is never published; Caddy is the only thing listening on
+the internet.
+
+```
+Claude Code ──HTTPS──▶ Caddy :443 ──▶ mcp:8000 ──▶ /data  (notes + audit log, a Docker volume)
+```
+
+On an Ubuntu 24.04 host with Docker:
+
+```bash
+cp deploy/.env.example deploy/.env      # set MCP_TOKEN and MCP_PUBLIC_HOST
+sudo docker compose -f deploy/compose.yaml up -d --build
+```
+
+Then point Claude Code at it:
+
+```bash
+claude mcp add --transport http notes https://yourname.duckdns.org/mcp \
+  --header "Authorization: Bearer <MCP_TOKEN>"
+```
+
+Three things about this setup are deliberate:
+
+- **Claude Code is the client that can write.** It implements elicitation, so
+  the server's own gate runs end to end and decisions are logged as
+  `gate: "elicit"`. The server keeps the default `deny` fallback, so a client
+  without elicitation (Claude Desktop, claude.ai) can read notes but every write
+  is refused — the fail-closed rule from "Whose gate is it?", applied to the
+  network.
+- **The session is stateful.** Elicitation is a server-to-client request in the
+  middle of a tool call. Stateless HTTP has no channel for it, and every write
+  would be denied.
+- **The instance metadata service is locked down.** `fetch_url` will request any
+  URL, and on EC2 `169.254.169.254` hands out credentials. Launch with IMDSv2
+  required, hop limit 1, and no IAM role: IMDSv2 rejects `fetch_url`'s plain
+  GETs, and hop limit 1 keeps the token out of reach of anything in a container.
+
+The server refuses to start without a token of at least 32 characters, and
+rejects requests addressed to any host but `MCP_PUBLIC_HOST`.
+
 ---
 
 ## The design decisions worth explaining
@@ -335,3 +378,6 @@ not evidence of anything.
   `NOTES_MCP_APPROVAL_FALLBACK=client` to defer to the client's own confirmation
   UI instead — the audit log records which gate decided, so a delegated approval
   is never mistaken for one this project made.
+- **Remote access is one shared bearer token.** Fine for one person; anyone
+  holding it has the same access. claude.ai connectors expect OAuth, which this
+  doesn't implement, so the deployed server is reachable from Claude Code only.
