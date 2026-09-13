@@ -17,15 +17,19 @@ Human-in-the-loop: risky tools ask for approval through MCP elicitation, so the
 gate belongs to this server rather than to whichever client is connected. See
 _ask_permission() for why that distinction matters.
 
-Run it:      python mcp_server.py
-Wire it up:  see the claude_desktop_config.json snippet in the README.
+Run it:      python mcp_server.py                            (stdio, for Claude Desktop)
+             NOTES_MCP_TRANSPORT=http python mcp_server.py   (HTTP, behind Caddy; see deploy/)
+Wire it up:  see the README.
 """
 
+import hmac
 import os
 
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.exceptions import MCPError, NoBackChannelError
 from pydantic import BaseModel, Field
+from starlette.responses import PlainTextResponse
 
 import audit
 import tools
@@ -209,9 +213,92 @@ async def delete_note(filename: str, ctx: Context) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Remote transport — streamable HTTP behind a bearer token
+# ---------------------------------------------------------------------------
+
+# Anything shorter is guessable enough that we would rather not start at all.
+MIN_TOKEN_LENGTH = 32
+
+
+class BearerTokenMiddleware:
+    """Reject any HTTP request that doesn't carry the shared bearer token.
+
+    Deliberately not the SDK's token_verifier: that path needs an OAuth issuer
+    URL and advertises it in protected-resource metadata, so a client that gets
+    a 401 goes looking for an authorization server that doesn't exist. One
+    static token for one user is the honest description of this setup.
+    """
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.expected = f"Bearer {token}".encode()
+
+    async def __call__(self, scope, receive, send):
+        # Lifespan events carry no headers and must reach the app untouched:
+        # they are what starts the MCP session manager.
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        presented = dict(scope["headers"]).get(b"authorization", b"")
+        # compare_digest, so the check doesn't leak how much of the token matched.
+        if not hmac.compare_digest(presented, self.expected):
+            await PlainTextResponse("unauthorized", status_code=401)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+def build_http_app(token: str, public_host: str):
+    """The ASGI app the deployed server runs: MCP over streamable HTTP, token-gated."""
+    if len(token) < MIN_TOKEN_LENGTH:
+        raise ValueError(f"MCP_TOKEN must be at least {MIN_TOKEN_LENGTH} characters")
+    if not public_host:
+        raise ValueError("MCP_PUBLIC_HOST must name the host clients connect to")
+
+    app = server.streamable_http_app(
+        # Stateful on purpose. Elicitation is a request from server to client in
+        # the middle of a tool call, and it needs a live session to travel on.
+        # Stateless mode has no back channel, so _ask_permission would deny
+        # every write.
+        stateless_http=False,
+        # The SDK only enables DNS rebinding protection by itself for a
+        # localhost bind. Behind Caddy we bind 0.0.0.0, so name the host.
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=[public_host, "localhost:*", "127.0.0.1:*"],
+            allowed_origins=[f"https://{public_host}"],
+        ),
+    )
+    return BearerTokenMiddleware(app, token)
+
+
+def run_http() -> None:
+    try:
+        app = build_http_app(
+            os.environ.get("MCP_TOKEN", ""), os.environ.get("MCP_PUBLIC_HOST", "")
+        )
+    except ValueError as e:
+        raise SystemExit(f"refusing to start: {e}")
+
+    # A fresh volume has no notes folder yet, and write_note would then fail
+    # with an OSError that _call doesn't translate into a readable result.
+    tools.NOTES_DIR.mkdir(parents=True, exist_ok=True)
+
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
 if __name__ == "__main__":
-    # stdio is the transport Claude Desktop expects for a local server: it
-    # launches this file as a subprocess and talks to it over stdin/stdout.
-    # That is also why nothing here may print to stdout — it would corrupt the
-    # protocol stream.
-    server.run(transport="stdio")
+    transport = os.environ.get("NOTES_MCP_TRANSPORT", "stdio")
+    if transport == "stdio":
+        # stdio is the transport Claude Desktop expects for a local server: it
+        # launches this file as a subprocess and talks to it over stdin/stdout.
+        # That is also why nothing here may print to stdout in this mode — it
+        # would corrupt the protocol stream.
+        server.run(transport="stdio")
+    elif transport == "http":
+        run_http()
+    else:
+        raise SystemExit(f"NOTES_MCP_TRANSPORT must be 'stdio' or 'http', got {transport!r}")
