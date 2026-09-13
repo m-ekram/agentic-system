@@ -1,0 +1,11 @@
+# Keep the image to what it needs to run the evals. Above all, never copy the
+# real API key in: without this file, COPY . . picks up .env on a local build.
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+audit_log.jsonl
+.git/
+.claude/
