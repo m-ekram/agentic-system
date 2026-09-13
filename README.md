@@ -164,7 +164,10 @@ asking the model to behave:
    `.resolve()`s it and rejects anything landing outside `notes/`. It doesn't
    care *why* a path was requested. An allowlist ("must be inside this folder"),
    not a blocklist ("must not contain `..`") — a blocklist is a guess about what
-   an attacker will type.
+   an attacker will type. `fetch_url` gets the same treatment on the network:
+   every host, including each redirect hop, must resolve to a public address,
+   so an injected "fetch this" can't point the agent at `localhost`, the LAN,
+   or a cloud metadata endpoint.
 2. **The approval gate.** Anything that changes state stops and shows a human
    the actual arguments. A request born of an injection and a request the user
    genuinely wanted look identical here, and both need the same `y`.
@@ -326,6 +329,11 @@ not evidence of anything.
   writing outside `notes/`. It is not a defence against arbitrary code
   execution — nothing here runs model-supplied code, which is why that's
   sufficient.
+- **The network check can be raced.** `fetch_url` resolves the host and checks
+  the addresses, then httpx resolves it again to connect. A DNS server that
+  answers differently the second time (DNS rebinding) gets past the check.
+  Closing that gap means connecting to the address that was checked, which
+  would need a custom transport.
 - **`fetch_url` returns raw HTML,** truncated at 4000 characters. No readability
   extraction, so the model sees markup.
 - **One conversation at a time.** No persistence between runs, no multi-user

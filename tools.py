@@ -17,6 +17,7 @@ worth more here than shaving a keyword off two functions.
 """
 
 import asyncio
+import ipaddress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -253,6 +254,58 @@ class FetchUrlArgs(BaseModel):
 # blow up our token bill or bury the real conversation under 500KB of text.
 MAX_FETCH_CHARS = 4000
 
+# Module-level so the tests can swap in an httpx.MockTransport. None means the
+# real network.
+_FETCH_TRANSPORT = None
+
+
+def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True only for addresses on the public internet.
+
+    is_global already rules out loopback, the private ranges, link-local (where
+    cloud metadata lives, at 169.254.169.254) and the other reserved blocks.
+    Multicast needs its own check: 224.0.0.1 reports is_global=True.
+    """
+    return ip.is_global and not ip.is_multicast
+
+
+async def _resolve_host(host: str) -> list[str]:
+    """Every address `host` resolves to. Module-level so the tests can fake DNS."""
+    infos = await asyncio.get_running_loop().getaddrinfo(host, None)
+    return sorted({info[4][0] for info in infos})
+
+
+async def _check_public_host(request: "httpx.Request") -> None:
+    """Refuse any request whose host is not on the public internet.
+
+    The same idea as _safe_path(), applied to the network. A page the model was
+    told to fetch must not be able to reach localhost, the LAN, or a cloud
+    metadata endpoint — and neither must a redirect from one. So this is an
+    allowlist ("must be a public address"), not a list of hostnames to avoid.
+
+    httpx runs request hooks before every hop, redirects included, so a public
+    page that redirects to 169.254.169.254 is stopped before that request is
+    sent.
+    """
+    host = request.url.host
+    try:
+        addresses = [str(ipaddress.ip_address(host))]
+    except ValueError:
+        # Not an IP literal, so it's a name: every address it resolves to must
+        # pass, because we don't get to choose which one httpx connects to.
+        try:
+            addresses = await _resolve_host(host)
+        except OSError as e:
+            raise ToolError(f"could not resolve {host!r}: {e}") from e
+
+    if not addresses:
+        raise ToolError(f"could not resolve {host!r}: no addresses")
+    for address in addresses:
+        # getaddrinfo can return a scoped IPv6 address such as fe80::1%eth0.
+        ip = ipaddress.ip_address(address.split("%", 1)[0])
+        if not _is_public_ip(ip):
+            raise ToolError(f"blocked: {host!r} resolves to non-public address {address}")
+
 
 async def fetch_url(args: FetchUrlArgs) -> str:
     """Fetch a web page and return its text.
@@ -266,14 +319,23 @@ async def fetch_url(args: FetchUrlArgs) -> str:
     model may believe it. That's fine — believing it isn't enough. To actually
     delete anything the model has to call delete_note, which is is_risky, which
     means a human sees the proposed deletion and has to type 'y'.
+
+    It also only talks to the public internet; see _check_public_host().
     """
     import httpx
 
     if not args.url.startswith(("http://", "https://")):
         raise ToolError(f"url must start with http:// or https://, got {args.url!r}")
 
+    # A ToolError raised by the hook is not an httpx.HTTPError, so it passes
+    # through the except below unchanged and reaches the model as "blocked: ...".
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=10.0,
+            follow_redirects=True,
+            transport=_FETCH_TRANSPORT,
+            event_hooks={"request": [_check_public_host]},
+        ) as client:
             response = await client.get(args.url)
             response.raise_for_status()
     except httpx.HTTPError as e:

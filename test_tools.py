@@ -5,18 +5,21 @@ These are the cheap tests: they prove the individual pieces behave, so that
 test_agent_evals.py can concentrate on the loop's behaviour instead.
 """
 
+import httpx
 import pytest
 
 import audit
 import tools
 from tools import (
     DeleteNoteArgs,
+    FetchUrlArgs,
     ListNotesArgs,
     ReadNoteArgs,
     SearchNotesArgs,
     ToolError,
     WriteNoteArgs,
     delete_note,
+    fetch_url,
     list_notes,
     read_note,
     search_notes,
@@ -191,3 +194,118 @@ async def test_log_is_append_only(notes_dir, audit_log):
 
     assert second.startswith(first), "existing audit lines were modified"
     assert len(second.splitlines()) == 2
+
+
+# ---------------------------------------------------------------------------
+# fetch_url: the network allowlist
+# ---------------------------------------------------------------------------
+#
+# No test here touches the real network: a MockTransport stands in for it and
+# records every request that would have gone out, so "blocked" can be proven by
+# the request never being sent, not just by the error message.
+
+# Where an injected "fetch this" might try to send the agent.
+INTERNAL_URLS = [
+    "http://127.0.0.1/",
+    "http://localhost:8000/",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://10.0.0.5/",
+    "http://[::1]/",
+    "http://[::ffff:127.0.0.1]/",
+    "http://224.0.0.1/",
+]
+
+
+def _ok(request):
+    return httpx.Response(200, text="hello")
+
+
+def _fake_web(monkeypatch, handler, dns):
+    """Serve `handler` instead of the network and resolve names from `dns`.
+
+    Returns the list of URLs that actually reached the transport.
+    """
+    sent: list[str] = []
+
+    def record(request):
+        sent.append(str(request.url))
+        return handler(request)
+
+    async def resolve(host):
+        if host not in dns:
+            raise OSError(f"unknown host {host}")
+        return dns[host]
+
+    monkeypatch.setattr(tools, "_FETCH_TRANSPORT", httpx.MockTransport(record))
+    monkeypatch.setattr(tools, "_resolve_host", resolve)
+    return sent
+
+
+@pytest.mark.parametrize("url", INTERNAL_URLS)
+async def test_fetch_url_refuses_internal_addresses(monkeypatch, url):
+    sent = _fake_web(monkeypatch, _ok, dns={"localhost": ["127.0.0.1", "::1"]})
+
+    with pytest.raises(ToolError, match="blocked"):
+        await fetch_url(FetchUrlArgs(url=url))
+
+    assert sent == [], "a request to an internal address was sent"
+
+
+async def test_fetch_url_blocks_localhost_with_the_real_resolver(monkeypatch):
+    """The default resolver, not a fake one, must also catch a name."""
+    monkeypatch.setattr(tools, "_FETCH_TRANSPORT", httpx.MockTransport(_ok))
+
+    with pytest.raises(ToolError, match="blocked"):
+        await fetch_url(FetchUrlArgs(url="http://localhost:8000/"))
+
+
+async def test_fetch_url_blocks_a_name_with_any_internal_address(monkeypatch):
+    """One internal address is enough to refuse: we can't pick which one gets used."""
+    sent = _fake_web(
+        monkeypatch, _ok, dns={"mixed.example.com": ["93.184.216.34", "10.0.0.5"]}
+    )
+
+    with pytest.raises(ToolError, match="blocked"):
+        await fetch_url(FetchUrlArgs(url="https://mixed.example.com/"))
+
+    assert sent == []
+
+
+async def test_fetch_url_allows_public_hosts(monkeypatch):
+    sent = _fake_web(monkeypatch, _ok, dns={"example.com": ["93.184.216.34"]})
+
+    out = await fetch_url(FetchUrlArgs(url="https://example.com/"))
+
+    assert "UNTRUSTED EXTERNAL CONTENT" in out
+    assert "hello" in out
+    assert sent == ["https://example.com/"]
+
+
+async def test_fetch_url_blocks_a_redirect_to_an_internal_address(monkeypatch):
+    """A public page must not be able to bounce the agent into the metadata service."""
+
+    def handler(request):
+        if request.url.host == "tips.example.com":
+            return httpx.Response(
+                302, headers={"Location": "http://169.254.169.254/latest/meta-data/"}
+            )
+        return httpx.Response(200, text="cloud credentials")
+
+    sent = _fake_web(monkeypatch, handler, dns={"tips.example.com": ["93.184.216.34"]})
+
+    with pytest.raises(ToolError, match="blocked"):
+        await fetch_url(FetchUrlArgs(url="https://tips.example.com/"))
+
+    assert sent == ["https://tips.example.com/"], "the redirected request was sent"
+
+
+async def test_fetch_url_reports_an_unresolvable_host(monkeypatch):
+    _fake_web(monkeypatch, _ok, dns={})
+
+    with pytest.raises(ToolError, match="could not resolve"):
+        await fetch_url(FetchUrlArgs(url="https://no-such-host.example/"))
+
+
+async def test_fetch_url_rejects_non_http_schemes():
+    with pytest.raises(ToolError, match="http"):
+        await fetch_url(FetchUrlArgs(url="file:///etc/passwd"))
