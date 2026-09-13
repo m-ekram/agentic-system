@@ -1,0 +1,9 @@
+# Keep secrets and local state out of the image. Without this, `COPY . .` in the
+# Dockerfile bakes .env (the API key) and a Windows virtualenv into a layer.
+**/.env
+.venv/
+**/__pycache__/
+.pytest_cache/
+audit_log.jsonl
+.git/
+.claude/
